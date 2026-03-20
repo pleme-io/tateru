@@ -32,13 +32,12 @@
     flake-utils.lib.eachSystem ["aarch64-darwin"] (system: let
       pkgs = import nixpkgs {inherit system;};
 
-      # crate2nix build
       generatedCargoNix = crate2nix.tools.${system}.appliedCargoNix {
         name = "tateru";
         src = ./.;
       };
 
-      crateOverrides = pkgs.defaultCrateOverrides // {
+      tateruOverrides = pkgs.defaultCrateOverrides // {
         tateru = attrs: {
           nativeBuildInputs = (attrs.nativeBuildInputs or []) ++ [
             pkgs.darwin.sigtool
@@ -52,13 +51,12 @@
       };
 
       project = generatedCargoNix.rootCrate.build.override {
-        defaultCrateOverrides = crateOverrides;
+        defaultCrateOverrides = tateruOverrides;
       };
     in {
       packages.default = project;
 
       devShells.default = pkgs.mkShellNoCC {
-        inputsFrom = [project];
         packages = with pkgs; [
           cargo
           rustc
