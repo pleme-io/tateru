@@ -338,6 +338,10 @@ impl<E: VmEngine> VmBuilder<E> {
             .spawn(move || {
                 let result = self.engine.start_enter(ctx);
                 vm_running.store(false, Ordering::SeqCst);
+                // start_enter only returns on error — log it
+                if let Err(ref e) = result {
+                    tracing::error!("VM thread exited: {e}");
+                }
                 result
             })
             .map_err(TateruError::BridgeIo)?;
