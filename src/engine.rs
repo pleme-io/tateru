@@ -666,4 +666,121 @@ mod tests {
     fn libkrun_engine_is_zero_sized() {
         assert_eq!(std::mem::size_of::<LibkrunEngine>(), 0);
     }
+
+    #[test]
+    fn mock_set_console_output() {
+        let engine = MockEngine::new();
+        let ctx = engine.create_ctx().unwrap();
+        let console = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/console.log"),
+        };
+        engine.set_console_output(ctx, &console).unwrap();
+
+        let calls = engine.recorded_calls();
+        assert!(matches!(calls[1], EngineCall::SetConsoleOutput { ctx: 0 }));
+    }
+
+    #[test]
+    fn mock_get_shutdown_eventfd_failure() {
+        let engine = MockEngine::new();
+        engine
+            .fail_get_shutdown_eventfd
+            .store(true, Ordering::SeqCst);
+        let ctx = engine.create_ctx().unwrap();
+        let err = engine.get_shutdown_eventfd(ctx).unwrap_err();
+        assert!(matches!(err, TateruError::Ffi { .. }));
+    }
+
+    #[test]
+    fn mock_engine_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockEngine>();
+    }
+
+    #[test]
+    fn mock_engine_ctx_ids_increment() {
+        let engine = MockEngine::new();
+        for expected in 0..5 {
+            let ctx = engine.create_ctx().unwrap();
+            assert_eq!(ctx.raw(), expected);
+        }
+    }
+
+    #[test]
+    fn engine_call_clone() {
+        let call = EngineCall::SetVmConfig {
+            ctx: 0,
+            vcpus: 4,
+            memory_mib: 8192,
+        };
+        let cloned = call.clone();
+        assert_eq!(call, cloned);
+    }
+
+    #[test]
+    fn engine_call_debug() {
+        let call = EngineCall::CreateCtx;
+        let debug = format!("{call:?}");
+        assert!(debug.contains("CreateCtx"));
+    }
+
+    #[test]
+    fn mock_full_lifecycle_records_all_calls() {
+        let engine = MockEngine::new();
+        let ctx = engine.create_ctx().unwrap();
+        let vcpus = VcpuCount::new(4).unwrap();
+        let memory = MemoryMib::new(4096).unwrap();
+        engine.set_vm_config(ctx, vcpus, memory).unwrap();
+
+        let disk = DiskConfig {
+            path: PathBuf::from("/test.qcow2"),
+            format: crate::devices::DiskFormat::Qcow2,
+            read_only: false,
+        };
+        engine.add_disk(ctx, &disk, 0).unwrap();
+
+        let mount = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "data".into(),
+        };
+        engine.add_virtiofs(ctx, &mount).unwrap();
+
+        let port = VsockPort {
+            guest_port: crate::types::GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/vsock.sock"),
+        };
+        engine.add_vsock_port(ctx, &port).unwrap();
+
+        let console = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/console.log"),
+        };
+        engine.set_console_output(ctx, &console).unwrap();
+
+        engine
+            .set_smbios_oem_strings(ctx, &["key=val"])
+            .unwrap();
+        engine.set_nested_virt(ctx, true).unwrap();
+
+        let fd = engine.get_shutdown_eventfd(ctx).unwrap();
+        assert!(fd >= 0);
+        unsafe { libc::close(fd) };
+
+        engine.start_enter(ctx).unwrap();
+
+        let calls = engine.recorded_calls();
+        assert_eq!(calls.len(), 10);
+        assert!(matches!(calls[0], EngineCall::CreateCtx));
+        assert!(matches!(calls[1], EngineCall::SetVmConfig { .. }));
+        assert!(matches!(calls[2], EngineCall::AddDisk { .. }));
+        assert!(matches!(calls[3], EngineCall::AddVirtiofs { .. }));
+        assert!(matches!(calls[4], EngineCall::AddVsockPort { .. }));
+        assert!(matches!(calls[5], EngineCall::SetConsoleOutput { .. }));
+        assert!(matches!(calls[6], EngineCall::SetSmbiosOemStrings { .. }));
+        assert!(matches!(calls[7], EngineCall::SetNestedVirt { .. }));
+        assert!(matches!(
+            calls[8],
+            EngineCall::GetShutdownEventfd { .. }
+        ));
+        assert!(matches!(calls[9], EngineCall::StartEnter { .. }));
+    }
 }

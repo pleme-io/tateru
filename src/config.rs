@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::devices::{DiskConfig, DiskFormat, VirtioFsMount};
 use crate::error::TateruError;
-use crate::types::{GuestPort, MemoryMib, VcpuCount};
+use crate::types::{MemoryMib, VcpuCount};
 use crate::vm::VmBuilder;
 use crate::engine::VmEngine;
 

@@ -374,4 +374,139 @@ mod tests {
         assert_eq!(GuestPort::new(22).unwrap(), GuestPort::new(22).unwrap());
         assert_ne!(GuestPort::new(22).unwrap(), GuestPort::new(80).unwrap());
     }
+
+    // -- MemoryMib overflow edge cases --
+
+    #[test]
+    fn memory_mib_parse_gib_overflow() {
+        // 5_000_000 GiB * 1024 = 5_120_000_000 which overflows u32
+        let err = MemoryMib::parse("5000000GiB").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_gib_just_below_overflow() {
+        // 4_194_303 GiB * 1024 = 4_294_967_296 which overflows u32 (max is 4_294_967_295)
+        let err = MemoryMib::parse("4194304GiB").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_gib_max_valid() {
+        // u32::MAX / 1024 = 4_194_303 GiB
+        let m = MemoryMib::parse("4194303GiB").unwrap();
+        assert_eq!(m.raw(), 4_194_303 * 1024);
+    }
+
+    #[test]
+    fn memory_mib_parse_u32_max() {
+        let m = MemoryMib::new(u32::MAX).unwrap();
+        assert_eq!(m.raw(), u32::MAX);
+    }
+
+    #[test]
+    fn memory_mib_parse_empty_string() {
+        let err = MemoryMib::parse("").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_only_suffix() {
+        let err = MemoryMib::parse("GiB").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_negative() {
+        let err = MemoryMib::parse("-1").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_zero_gib() {
+        // "0GiB" → 0 MiB → rejected by MemoryMib::new
+        let err = MemoryMib::parse("0GiB").unwrap_err();
+        assert!(err.to_string().contains("at least 1"));
+    }
+
+    #[test]
+    fn memory_mib_parse_zero_mib() {
+        let err = MemoryMib::parse("0MiB").unwrap_err();
+        assert!(err.to_string().contains("at least 1"));
+    }
+
+    #[test]
+    fn memory_mib_display_1gib() {
+        let m = MemoryMib::new(1024).unwrap();
+        assert_eq!(m.to_string(), "1GiB");
+    }
+
+    #[test]
+    fn memory_mib_display_1mib() {
+        let m = MemoryMib::new(1).unwrap();
+        assert_eq!(m.to_string(), "1MiB");
+    }
+
+    // -- VcpuCount copy semantics --
+
+    #[test]
+    fn vcpu_count_copy_semantics() {
+        let a = VcpuCount::new(4).unwrap();
+        let b = a; // Copy
+        let c = a; // Still valid after copy
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(a.raw(), 4);
+        assert_eq!(b.raw(), 4);
+        assert_eq!(c.raw(), 4);
+    }
+
+    // -- CtxId hash --
+
+    #[test]
+    fn ctx_id_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(CtxId(1));
+        set.insert(CtxId(2));
+        set.insert(CtxId(1)); // duplicate
+        assert_eq!(set.len(), 2);
+    }
+
+    // -- GuestPort max value --
+
+    #[test]
+    fn guest_port_max_value() {
+        let p = GuestPort::new(u32::MAX).unwrap();
+        assert_eq!(p.raw(), u32::MAX);
+    }
+
+    // -- GuestPort hash --
+
+    #[test]
+    fn guest_port_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(GuestPort::new(22).unwrap());
+        set.insert(GuestPort::new(80).unwrap());
+        set.insert(GuestPort::new(22).unwrap()); // duplicate
+        assert_eq!(set.len(), 2);
+    }
+
+    // -- LogLevel copy --
+
+    #[test]
+    fn log_level_copy() {
+        let a = LogLevel::Debug;
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    // -- LogLevel equality --
+
+    #[test]
+    fn log_level_equality() {
+        assert_eq!(LogLevel::Off, LogLevel::Off);
+        assert_ne!(LogLevel::Off, LogLevel::Error);
+    }
 }

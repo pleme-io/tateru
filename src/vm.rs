@@ -815,4 +815,226 @@ mod tests {
         let builder = test_builder().memory_mib(mem);
         assert_eq!(builder.memory.unwrap().raw(), 4096);
     }
+
+    // -- VmBuilder edge cases --
+
+    #[test]
+    fn builder_duplicate_disks_same_path() {
+        let disk = DiskConfig {
+            path: "/same.qcow2".into(),
+            format: DiskFormat::Qcow2,
+            read_only: false,
+        };
+        let builder = test_builder().disk(disk.clone()).disk(disk);
+        // Builder allows duplicate disk paths — libkrun decides if that's valid
+        assert_eq!(builder.disks.len(), 2);
+        assert_eq!(builder.disks[0].path, builder.disks[1].path);
+    }
+
+    #[test]
+    fn builder_empty_mount_tag() {
+        let builder = test_builder().virtiofs(VirtioFsMount {
+            host_path: "/shared".into(),
+            mount_tag: String::new(),
+        });
+        assert_eq!(builder.virtiofs_mounts.len(), 1);
+        assert!(builder.virtiofs_mounts[0].mount_tag.is_empty());
+    }
+
+    #[test]
+    fn builder_very_large_memory() {
+        // u32::MAX MiB
+        let mem = MemoryMib::new(u32::MAX).unwrap();
+        let builder = test_builder().memory_mib(mem);
+        assert_eq!(builder.memory.unwrap().raw(), u32::MAX);
+    }
+
+    #[test]
+    fn builder_max_cpus() {
+        let builder = test_builder().cpus(255).unwrap();
+        assert_eq!(builder.vcpus.unwrap().raw(), 255);
+    }
+
+    #[test]
+    fn builder_multiple_bridges() {
+        let builder = test_builder()
+            .vsock_bridge(31122, 22)
+            .unwrap()
+            .vsock_bridge(31180, 80)
+            .unwrap()
+            .vsock_bridge(31443, 443)
+            .unwrap();
+        assert_eq!(builder.bridges.len(), 3);
+    }
+
+    // -- MockVmControl tests --
+
+    #[test]
+    fn mock_vm_control_starts_running() {
+        let ctrl = MockVmControl::new();
+        assert!(ctrl.is_running());
+        assert_eq!(ctrl.stopped(), 0);
+    }
+
+    #[test]
+    fn mock_vm_control_stop() {
+        let mut ctrl = MockVmControl::new();
+        ctrl.stop().unwrap();
+        assert!(!ctrl.is_running());
+        assert_eq!(ctrl.stopped(), 1);
+    }
+
+    #[test]
+    fn mock_vm_control_stop_when_not_running() {
+        let mut ctrl = MockVmControl::new();
+        ctrl.stop().unwrap();
+        let err = ctrl.stop().unwrap_err();
+        assert!(matches!(err, TateruError::NotRunning));
+    }
+
+    #[test]
+    fn mock_vm_control_fail_stop() {
+        let mut ctrl = MockVmControl::new();
+        ctrl.fail_stop.store(true, Ordering::SeqCst);
+        let err = ctrl.stop().unwrap_err();
+        assert!(matches!(err, TateruError::BridgeIo(_)));
+        // Still recorded the call and stays running since stop failed
+        assert_eq!(ctrl.stopped(), 1);
+        assert!(ctrl.is_running());
+    }
+
+    #[test]
+    fn mock_vm_control_debug() {
+        let ctrl = MockVmControl::new();
+        let debug = format!("{ctrl:?}");
+        assert!(debug.contains("MockVmControl"));
+    }
+
+    // -- MockBridgeSpawner tests --
+
+    #[test]
+    fn mock_bridge_spawner_counts() {
+        let spawner = MockBridgeSpawner::new();
+        assert_eq!(spawner.spawned(), 0);
+
+        let (_tx, rx) = watch::channel(false);
+        let cfg = BridgeConfig {
+            host_port: 31122,
+            socket_path: "/tmp/vsock-22.sock".into(),
+        };
+        let _handle = spawner.spawn(cfg.clone(), rx.clone());
+        assert_eq!(spawner.spawned(), 1);
+
+        let _handle2 = spawner.spawn(cfg, rx);
+        assert_eq!(spawner.spawned(), 2);
+    }
+
+    // -- launch with mock spawner --
+
+    #[tokio::test]
+    async fn launch_with_mock_spawner_records_bridge_count() {
+        let spawner = MockBridgeSpawner::new();
+        let result = Vm::builder(MockEngine::new())
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .vsock_bridge(0, 22)
+            .unwrap()
+            .vsock_bridge(0, 80)
+            .unwrap()
+            .launch_with_spawner(spawner)
+            .await;
+
+        assert!(result.is_ok());
+        let mut handle = result.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = handle.stop();
+    }
+
+    // -- VmControl trait is object-safe --
+
+    #[test]
+    fn vm_control_is_object_safe() {
+        fn assert_object_safe(_: &dyn VmControl) {}
+        let ctrl = MockVmControl::new();
+        assert_object_safe(&ctrl);
+    }
+
+    // -- launch_with_spawner engine failures --
+
+    #[tokio::test]
+    async fn launch_set_vm_config_failure() {
+        let engine = MockEngine::new();
+        engine
+            .fail_set_vm_config
+            .store(true, Ordering::SeqCst);
+
+        let result = Vm::builder(engine)
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TateruError::Ffi { .. }));
+    }
+
+    #[tokio::test]
+    async fn launch_add_disk_failure() {
+        let engine = MockEngine::new();
+        engine.fail_add_disk.store(true, Ordering::SeqCst);
+
+        let result = Vm::builder(engine)
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TateruError::Ffi { .. }));
+    }
+
+    #[tokio::test]
+    async fn launch_get_shutdown_eventfd_failure() {
+        let engine = MockEngine::new();
+        engine
+            .fail_get_shutdown_eventfd
+            .store(true, Ordering::SeqCst);
+
+        let result = Vm::builder(engine)
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TateruError::Ffi { .. }));
+    }
 }
