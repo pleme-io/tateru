@@ -31,8 +31,62 @@ use crate::bridge::{self, BridgeConfig, BridgeHandle};
 use crate::devices::{ConsoleConfig, DiskConfig, VirtioFsMount, VsockPort};
 use crate::engine::VmEngine;
 use crate::error::TateruError;
-use crate::shutdown::ShutdownHandle;
+use crate::shutdown::{EventfdShutdown, Shutdown};
 use crate::types::{GuestPort, MemoryMib, VcpuCount};
+
+// ---------------------------------------------------------------------------
+// BridgeSpawner trait
+// ---------------------------------------------------------------------------
+
+/// Abstraction for spawning vsock TCP bridge tasks.
+///
+/// The real implementation spawns tokio tasks that forward TCP connections
+/// to Unix sockets. Tests can substitute a mock that records calls.
+pub trait BridgeSpawner: Send + Sync {
+    /// Spawn a bridge task for the given configuration.
+    fn spawn(
+        &self,
+        config: BridgeConfig,
+        shutdown: watch::Receiver<bool>,
+    ) -> BridgeHandle;
+}
+
+/// Production bridge spawner using tokio tasks.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokioBridgeSpawner;
+
+impl TokioBridgeSpawner {
+    /// Create a new tokio bridge spawner.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl BridgeSpawner for TokioBridgeSpawner {
+    fn spawn(
+        &self,
+        config: BridgeConfig,
+        shutdown: watch::Receiver<bool>,
+    ) -> BridgeHandle {
+        bridge::spawn_bridge(config, shutdown)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VmControl trait
+// ---------------------------------------------------------------------------
+
+/// Abstraction over a running VM handle for lifecycle management.
+///
+/// Enables mocking in tests without requiring a real VM or real file descriptors.
+pub trait VmControl: Send + std::fmt::Debug {
+    /// Check if the VM is still running.
+    fn is_running(&self) -> bool;
+
+    /// Gracefully stop the VM.
+    fn stop(&mut self) -> Result<(), TateruError>;
+}
 
 /// A vsock bridge request: host TCP port ↔ guest vsock port.
 #[derive(Debug, Clone)]
@@ -177,7 +231,7 @@ impl<E: VmEngine> VmBuilder<E> {
         Ok(())
     }
 
-    /// Launch the VM.
+    /// Launch the VM using the default [`TokioBridgeSpawner`].
     ///
     /// 1. Creates a libkrun context via the engine
     /// 2. Configures vCPUs, memory, devices
@@ -185,6 +239,20 @@ impl<E: VmEngine> VmBuilder<E> {
     /// 4. Spawns a dedicated thread for `start_enter` (blocks forever)
     /// 5. Returns a `VmHandle` for lifecycle management
     pub async fn launch(self) -> Result<VmHandle, TateruError>
+    where
+        E: 'static,
+    {
+        self.launch_with_spawner(TokioBridgeSpawner::new()).await
+    }
+
+    /// Launch the VM with a custom [`BridgeSpawner`].
+    ///
+    /// Same as [`launch`](Self::launch) but allows injecting a mock spawner
+    /// for testing bridge orchestration without real TCP listeners.
+    pub async fn launch_with_spawner<S: BridgeSpawner>(
+        self,
+        spawner: S,
+    ) -> Result<VmHandle, TateruError>
     where
         E: 'static,
     {
@@ -249,7 +317,8 @@ impl<E: VmEngine> VmBuilder<E> {
 
         // 8. Get shutdown eventfd
         let shutdown_fd = self.engine.get_shutdown_eventfd(ctx)?;
-        let shutdown = unsafe { ShutdownHandle::from_raw_fd(shutdown_fd) };
+        let shutdown: Box<dyn Shutdown> =
+            Box::new(unsafe { EventfdShutdown::from_raw_fd(shutdown_fd) });
 
         // 9. Shutdown signal channel for bridges
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -258,7 +327,7 @@ impl<E: VmEngine> VmBuilder<E> {
         // 10. Spawn bridge tasks
         let mut bridge_handles = Vec::new();
         for cfg in bridge_configs {
-            let handle = bridge::spawn_bridge(cfg, shutdown_rx.clone());
+            let handle = spawner.spawn(cfg, shutdown_rx.clone());
             bridge_handles.push(handle);
         }
 
@@ -271,7 +340,7 @@ impl<E: VmEngine> VmBuilder<E> {
                 vm_running.store(false, Ordering::SeqCst);
                 result
             })
-            .map_err(|e| TateruError::BridgeIo(e))?;
+            .map_err(TateruError::BridgeIo)?;
 
         info!("VM launched on dedicated thread");
 
@@ -287,9 +356,11 @@ impl<E: VmEngine> VmBuilder<E> {
 }
 
 /// Handle to a running VM. Provides lifecycle management.
+///
+/// Implements [`VmControl`] for testable lifecycle management.
 pub struct VmHandle {
     running: Arc<AtomicBool>,
-    shutdown: ShutdownHandle,
+    shutdown: Box<dyn Shutdown>,
     shutdown_tx: watch::Sender<bool>,
     #[allow(dead_code)]
     bridge_handles: Vec<BridgeHandle>,
@@ -297,15 +368,12 @@ pub struct VmHandle {
     workdir: PathBuf,
 }
 
-impl VmHandle {
-    /// Check if the VM is still running.
-    #[must_use]
-    pub fn is_running(&self) -> bool {
+impl VmControl for VmHandle {
+    fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Gracefully stop the VM via the shutdown eventfd.
-    pub fn stop(&mut self) -> Result<(), TateruError> {
+    fn stop(&mut self) -> Result<(), TateruError> {
         if !self.is_running() {
             return Err(TateruError::NotRunning);
         }
@@ -338,6 +406,19 @@ impl VmHandle {
     }
 }
 
+impl VmHandle {
+    /// Check if the VM is still running.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        <Self as VmControl>::is_running(self)
+    }
+
+    /// Gracefully stop the VM via the shutdown eventfd.
+    pub fn stop(&mut self) -> Result<(), TateruError> {
+        <Self as VmControl>::stop(self)
+    }
+}
+
 impl Drop for VmHandle {
     fn drop(&mut self) {
         if self.is_running() {
@@ -354,6 +435,106 @@ impl std::fmt::Debug for VmHandle {
             .field("running", &self.is_running())
             .field("workdir", &self.workdir)
             .finish()
+    }
+}
+
+/// Mock VM control handle for testing without real VMs.
+///
+/// Tracks `is_running` and `stop` calls without file descriptors or threads.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug)]
+pub struct MockVmControl {
+    /// Whether the mock VM is considered running.
+    pub running: AtomicBool,
+    /// Number of times `stop()` has been called.
+    pub stop_count: std::sync::atomic::AtomicU32,
+    /// If true, `stop()` returns an error.
+    pub fail_stop: AtomicBool,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Default for MockVmControl {
+    fn default() -> Self {
+        Self {
+            running: AtomicBool::new(true),
+            stop_count: std::sync::atomic::AtomicU32::new(0),
+            fail_stop: AtomicBool::new(false),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl MockVmControl {
+    /// Create a new mock handle in the running state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many times `stop()` was called.
+    #[must_use]
+    pub fn stopped(&self) -> u32 {
+        self.stop_count.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl VmControl for MockVmControl {
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    fn stop(&mut self) -> Result<(), TateruError> {
+        if !self.is_running() {
+            return Err(TateruError::NotRunning);
+        }
+        self.stop_count.fetch_add(1, Ordering::SeqCst);
+        if self.fail_stop.load(Ordering::SeqCst) {
+            return Err(TateruError::BridgeIo(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "mock stop failure",
+            )));
+        }
+        self.running.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Mock bridge spawner for testing.
+///
+/// Records spawn calls instead of creating real TCP listeners.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Default)]
+pub struct MockBridgeSpawner {
+    /// Number of bridges spawned.
+    pub spawn_count: std::sync::atomic::AtomicU32,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl MockBridgeSpawner {
+    /// Create a new mock bridge spawner.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many times `spawn()` was called.
+    #[must_use]
+    pub fn spawned(&self) -> u32 {
+        self.spawn_count.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl BridgeSpawner for MockBridgeSpawner {
+    fn spawn(
+        &self,
+        _config: BridgeConfig,
+        _shutdown: watch::Receiver<bool>,
+    ) -> BridgeHandle {
+        self.spawn_count.fetch_add(1, Ordering::SeqCst);
+        // Return a handle with a no-op task
+        BridgeHandle::noop()
     }
 }
 

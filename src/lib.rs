@@ -28,25 +28,34 @@
 //! handle.stop()?;
 //! ```
 
+pub mod bridge;
 pub mod devices;
 pub mod engine;
 pub mod error;
+pub mod shutdown;
 pub mod types;
-
-pub(crate) mod bridge;
-pub(crate) mod ffi;
-pub(crate) mod shutdown;
 pub mod vm;
+
+pub(crate) mod ffi;
 
 #[cfg(feature = "config")]
 pub mod config;
 
 // Re-exports for ergonomic use
+pub use bridge::{BridgeConfig, BridgeHandle};
 pub use devices::{ConsoleConfig, DiskConfig, DiskFormat, VirtioFsMount, VsockPort};
 pub use engine::{LibkrunEngine, VmEngine};
 pub use error::TateruError;
+pub use shutdown::Shutdown;
 pub use types::{CtxId, GuestPort, LogLevel, MemoryMib, VcpuCount};
-pub use vm::{Vm, VmBuilder, VmHandle};
+pub use vm::{BridgeSpawner, TokioBridgeSpawner, Vm, VmBuilder, VmControl, VmHandle};
 
 #[cfg(any(test, feature = "testing"))]
-pub use engine::mock;
+pub mod mock {
+    //! Mock types for testing without real libkrun.
+    //!
+    //! Re-exports all mock implementations from their respective modules.
+    pub use crate::engine::mock::{EngineCall, MockEngine};
+    pub use crate::shutdown::MockShutdown;
+    pub use crate::vm::{MockBridgeSpawner, MockVmControl};
+}

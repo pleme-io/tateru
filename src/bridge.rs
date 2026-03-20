@@ -16,7 +16,7 @@ use crate::error::TateruError;
 
 /// Configuration for a single vsock bridge.
 #[derive(Debug, Clone)]
-pub(crate) struct BridgeConfig {
+pub struct BridgeConfig {
     /// Host TCP port to listen on.
     pub host_port: u16,
     /// Path to the Unix socket created by libkrun for this vsock port.
@@ -25,9 +25,18 @@ pub(crate) struct BridgeConfig {
 
 /// A running vsock bridge task handle.
 #[derive(Debug)]
-pub(crate) struct BridgeHandle {
+pub struct BridgeHandle {
     #[allow(dead_code)]
-    task: tokio::task::JoinHandle<()>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl BridgeHandle {
+    /// Create a no-op handle (for testing).
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn noop() -> Self {
+        Self { task: None }
+    }
 }
 
 /// Start a TCP-to-vsock bridge.
@@ -89,7 +98,7 @@ pub(crate) fn spawn_bridge(
         }
     });
 
-    BridgeHandle { task }
+    BridgeHandle { task: Some(task) }
 }
 
 async fn handle_connection(

@@ -19,6 +19,7 @@ pub enum DiskFormat {
 
 impl DiskFormat {
     /// Convert to the libkrun FFI constant.
+    #[inline]
     pub(crate) fn to_ffi(self) -> u32 {
         match self {
             Self::Raw => crate::ffi::KRUN_DISK_FORMAT_RAW,

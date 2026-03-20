@@ -16,6 +16,7 @@ pub struct CtxId(pub(crate) u32);
 
 impl CtxId {
     /// Raw numeric value (for logging/debugging only).
+    #[inline]
     #[must_use]
     pub fn raw(self) -> u32 {
         self.0
@@ -50,6 +51,7 @@ impl VcpuCount {
     }
 
     /// Raw u8 value for FFI.
+    #[inline]
     #[must_use]
     pub fn raw(self) -> u8 {
         self.0
@@ -107,6 +109,7 @@ impl MemoryMib {
     }
 
     /// Raw u32 value for FFI.
+    #[inline]
     #[must_use]
     pub fn raw(self) -> u32 {
         self.0
@@ -137,6 +140,7 @@ pub enum LogLevel {
 
 impl LogLevel {
     /// Raw u32 value for FFI.
+    #[inline]
     #[must_use]
     pub fn raw(self) -> u32 {
         self as u32
@@ -165,6 +169,7 @@ impl GuestPort {
     }
 
     /// Raw u32 value for FFI.
+    #[inline]
     #[must_use]
     pub fn raw(self) -> u32 {
         self.0
