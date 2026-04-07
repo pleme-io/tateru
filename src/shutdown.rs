@@ -145,7 +145,6 @@ mod tests {
 
     #[test]
     fn eventfd_shutdown_debug() {
-        // Create a real pipe to test debug formatting
         let mut fds = [0i32; 2];
         let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
         assert_eq!(ret, 0);
@@ -153,5 +152,73 @@ mod tests {
         let shutdown = unsafe { EventfdShutdown::from_raw_fd(fds[1]) };
         let debug = format!("{shutdown:?}");
         assert!(debug.contains("EventfdShutdown"));
+    }
+
+    // Verify EventfdShutdown::trigger() actually writes to the pipe.
+    // Catches bugs where the write call is malformed, the wrong size is used,
+    // or cast issues corrupt the fd.
+    #[test]
+    fn eventfd_shutdown_trigger_writes() {
+        let mut fds = [0i32; 2];
+        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(ret, 0);
+        let shutdown = unsafe { EventfdShutdown::from_raw_fd(fds[1]) };
+        shutdown.trigger().unwrap();
+
+        // Read back from the pipe read end to prove data was written
+        let mut buf = [0u8; 8];
+        let n = unsafe {
+            libc::read(fds[0], buf.as_mut_ptr().cast(), 8)
+        };
+        assert_eq!(n, 8, "trigger should write exactly 8 bytes (u64)");
+        let val = u64::from_ne_bytes(buf);
+        assert_eq!(val, 1, "trigger should write the value 1");
+
+        unsafe { libc::close(fds[0]) };
+    }
+
+    // Verify trigger can be called multiple times.
+    #[test]
+    fn eventfd_shutdown_trigger_multiple() {
+        let mut fds = [0i32; 2];
+        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(ret, 0);
+        let shutdown = unsafe { EventfdShutdown::from_raw_fd(fds[1]) };
+        shutdown.trigger().unwrap();
+        shutdown.trigger().unwrap();
+
+        let mut buf = [0u8; 8];
+        for expected in [1u64, 1u64] {
+            let n = unsafe { libc::read(fds[0], buf.as_mut_ptr().cast(), 8) };
+            assert_eq!(n, 8);
+            assert_eq!(u64::from_ne_bytes(buf), expected);
+        }
+        unsafe { libc::close(fds[0]) };
+    }
+
+    // Verify Shutdown trait is object-safe (can be used as dyn Shutdown).
+    #[test]
+    fn shutdown_trait_is_object_safe() {
+        fn assert_object_safe(_: &dyn Shutdown) {}
+        let mock = MockShutdown::new();
+        assert_object_safe(&mock);
+    }
+
+    // MockShutdown default construction
+    #[test]
+    fn mock_shutdown_default() {
+        let s = MockShutdown::default();
+        assert_eq!(s.triggered(), 0);
+        assert!(!s.fail.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    // Verify trigger count increments even when fail is set
+    #[test]
+    fn mock_shutdown_fail_still_increments() {
+        let s = MockShutdown::new();
+        s.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = s.trigger();
+        let _ = s.trigger();
+        assert_eq!(s.triggered(), 2);
     }
 }
