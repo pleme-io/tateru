@@ -211,4 +211,100 @@ mod tests {
         // Port variable used to prevent unused warning
         let _ = port;
     }
+
+    // -- BridgeHandle::noop() --
+    // Catches bugs where noop handle panics on drop or has unexpected state.
+
+    #[test]
+    fn bridge_handle_noop_does_not_panic() {
+        let handle = BridgeHandle::noop();
+        assert!(handle.task.is_none());
+        drop(handle); // should not panic
+    }
+
+    // -- BridgeConfig Clone + Debug --
+
+    #[test]
+    fn bridge_config_clone() {
+        let cfg = BridgeConfig {
+            host_port: 8080,
+            socket_path: PathBuf::from("/tmp/test.sock"),
+        };
+        let cloned = cfg.clone();
+        assert_eq!(cloned.host_port, 8080);
+        assert_eq!(cloned.socket_path, PathBuf::from("/tmp/test.sock"));
+    }
+
+    #[test]
+    fn bridge_config_debug() {
+        let cfg = BridgeConfig {
+            host_port: 9090,
+            socket_path: PathBuf::from("/tmp/debug.sock"),
+        };
+        let d = format!("{cfg:?}");
+        assert!(d.contains("9090"));
+        assert!(d.contains("debug.sock"));
+    }
+
+    // -- BridgeHandle Debug --
+
+    #[test]
+    fn bridge_handle_debug() {
+        let handle = BridgeHandle::noop();
+        let d = format!("{handle:?}");
+        assert!(d.contains("BridgeHandle"));
+    }
+
+    // -- spawn_bridge with port 0 binds to ephemeral port --
+
+    #[tokio::test]
+    async fn bridge_spawn_ephemeral_port_binds() {
+        let (_tx, rx) = watch::channel(false);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BridgeConfig {
+            host_port: 0,
+            socket_path: tmp.path().join("test.sock"),
+        };
+        let handle = spawn_bridge(cfg, rx);
+        // Give the task time to bind
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Handle should be valid (task is Some)
+        assert!(handle.task.is_some());
+    }
+
+    // -- shutdown signal before any connections --
+
+    #[tokio::test]
+    async fn bridge_immediate_shutdown() {
+        let (tx, rx) = watch::channel(false);
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BridgeConfig {
+            host_port: 0,
+            socket_path: tmp.path().join("test.sock"),
+        };
+        let _handle = spawn_bridge(cfg, rx);
+        // Immediately signal shutdown
+        tx.send(true).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Should complete without hanging
+    }
+
+    // -- handle_connection when Unix socket doesn't exist --
+
+    #[tokio::test]
+    async fn handle_connection_unix_connect_fails() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (_tx, rx) = watch::channel(false);
+
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let result = handle_connection(
+            client,
+            std::path::Path::new("/nonexistent/socket.sock"),
+            rx,
+        )
+        .await;
+        assert!(result.is_err());
+    }
 }
