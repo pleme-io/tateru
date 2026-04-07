@@ -207,4 +207,202 @@ mod tests {
         let err = cfg.into_builder(MockEngine::new()).unwrap_err();
         assert!(err.to_string().contains("> 0"));
     }
+
+    // -- Deserialization with defaults --
+    // Catches bugs where serde defaults produce invalid values.
+
+    #[test]
+    fn config_deserialize_minimal() {
+        let json = r#"{"disk": "/test.qcow2"}"#;
+        let cfg: TateruConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.cpus, 6); // default
+        assert_eq!(cfg.memory, "8GiB"); // default
+        assert_eq!(cfg.disk, PathBuf::from("/test.qcow2"));
+        assert_eq!(cfg.disk_format, DiskFormat::Qcow2); // default
+        assert!(!cfg.disk_read_only); // default
+        assert!(cfg.virtiofs.is_empty()); // default
+        assert!(cfg.vsock_bridges.is_empty()); // default
+    }
+
+    #[test]
+    fn config_deserialize_disk_read_only_true() {
+        let json = r#"{"disk": "/test.raw", "disk_format": "raw", "disk_read_only": true}"#;
+        let cfg: TateruConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.disk_read_only);
+        assert_eq!(cfg.disk_format, DiskFormat::Raw);
+    }
+
+    // -- Multiple mounts and bridges --
+
+    #[test]
+    fn config_multiple_virtiofs_and_bridges() {
+        use crate::engine::mock::MockEngine;
+
+        let cfg = TateruConfig {
+            cpus: 4,
+            memory: "4GiB".into(),
+            disk: PathBuf::from("/test.qcow2"),
+            disk_format: DiskFormat::Qcow2,
+            disk_read_only: false,
+            virtiofs: vec![
+                VirtioFsMount {
+                    host_path: "/shared1".into(),
+                    mount_tag: "tag1".into(),
+                },
+                VirtioFsMount {
+                    host_path: "/shared2".into(),
+                    mount_tag: "tag2".into(),
+                },
+            ],
+            vsock_bridges: vec![
+                BridgeEntry { host_port: 31122, guest_port: 22 },
+                BridgeEntry { host_port: 31180, guest_port: 80 },
+            ],
+        };
+
+        let builder = cfg.into_builder(MockEngine::new()).unwrap();
+        assert_eq!(builder.disks.len(), 1);
+        assert_eq!(builder.virtiofs_mounts.len(), 2);
+        assert_eq!(builder.bridges.len(), 2);
+    }
+
+    // -- Config with read-only disk --
+
+    #[test]
+    fn config_into_builder_read_only_disk() {
+        use crate::engine::mock::MockEngine;
+
+        let cfg = TateruConfig {
+            cpus: 2,
+            memory: "2GiB".into(),
+            disk: PathBuf::from("/readonly.raw"),
+            disk_format: DiskFormat::Raw,
+            disk_read_only: true,
+            virtiofs: vec![],
+            vsock_bridges: vec![],
+        };
+
+        let builder = cfg.into_builder(MockEngine::new()).unwrap();
+        assert_eq!(builder.disks.len(), 1);
+        assert!(builder.disks[0].read_only);
+        assert_eq!(builder.disks[0].format, DiskFormat::Raw);
+    }
+
+    // -- BridgeEntry serde --
+
+    #[test]
+    fn bridge_entry_serde_roundtrip() {
+        let entry = BridgeEntry {
+            host_port: 31122,
+            guest_port: 22,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let entry2: BridgeEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(entry2.host_port, 31122);
+        assert_eq!(entry2.guest_port, 22);
+    }
+
+    #[test]
+    fn bridge_entry_debug() {
+        let entry = BridgeEntry {
+            host_port: 31122,
+            guest_port: 22,
+        };
+        let d = format!("{entry:?}");
+        assert!(d.contains("31122"));
+        assert!(d.contains("22"));
+    }
+
+    // -- TateruConfig Clone + Debug --
+
+    #[test]
+    fn config_clone() {
+        let cfg = TateruConfig {
+            cpus: 4,
+            memory: "4GiB".into(),
+            disk: PathBuf::from("/test.qcow2"),
+            disk_format: DiskFormat::Qcow2,
+            disk_read_only: false,
+            virtiofs: vec![],
+            vsock_bridges: vec![],
+        };
+        let cfg2 = cfg.clone();
+        assert_eq!(cfg2.cpus, 4);
+        assert_eq!(cfg2.memory, "4GiB");
+    }
+
+    #[test]
+    fn config_debug() {
+        let cfg = TateruConfig {
+            cpus: 4,
+            memory: "4GiB".into(),
+            disk: PathBuf::from("/test.qcow2"),
+            disk_format: DiskFormat::Qcow2,
+            disk_read_only: false,
+            virtiofs: vec![],
+            vsock_bridges: vec![],
+        };
+        let d = format!("{cfg:?}");
+        assert!(d.contains("TateruConfig"));
+    }
+
+    // -- Config with MiB memory specification --
+
+    #[test]
+    fn config_into_builder_mib_memory() {
+        use crate::engine::mock::MockEngine;
+
+        let cfg = TateruConfig {
+            cpus: 2,
+            memory: "2048MiB".into(),
+            disk: PathBuf::from("/test.qcow2"),
+            disk_format: DiskFormat::Qcow2,
+            disk_read_only: false,
+            virtiofs: vec![],
+            vsock_bridges: vec![],
+        };
+
+        // Should succeed without error (memory parsed correctly)
+        cfg.into_builder(MockEngine::new()).unwrap();
+    }
+
+    // -- Config with max cpus --
+
+    #[test]
+    fn config_into_builder_max_cpus() {
+        use crate::engine::mock::MockEngine;
+
+        let cfg = TateruConfig {
+            cpus: 255,
+            memory: "1GiB".into(),
+            disk: PathBuf::from("/test.qcow2"),
+            disk_format: DiskFormat::Qcow2,
+            disk_read_only: false,
+            virtiofs: vec![],
+            vsock_bridges: vec![],
+        };
+
+        // Should succeed — 255 is the max valid vCPU count
+        cfg.into_builder(MockEngine::new()).unwrap();
+    }
+
+    // -- Deserialize with all fields explicitly set --
+
+    #[test]
+    fn config_deserialize_all_fields() {
+        let json = r#"{
+            "cpus": 8,
+            "memory": "16GiB",
+            "disk": "/vm/guest.qcow2",
+            "disk_format": "qcow2",
+            "disk_read_only": false,
+            "virtiofs": [{"host_path": "/shared", "mount_tag": "data"}],
+            "vsock_bridges": [{"host_port": 31122, "guest_port": 22}]
+        }"#;
+        let cfg: TateruConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.cpus, 8);
+        assert_eq!(cfg.memory, "16GiB");
+        assert_eq!(cfg.virtiofs.len(), 1);
+        assert_eq!(cfg.vsock_bridges.len(), 1);
+    }
 }
