@@ -108,4 +108,90 @@ mod tests {
         let debug = format!("{e:?}");
         assert!(debug.contains("NotRunning"));
     }
+
+    // Verify std::error::Error source() chain propagation for BridgeIo.
+    // Catches bugs where the #[from] attribute is missing or source() returns None.
+
+    #[test]
+    fn bridge_io_has_source() {
+        use std::error::Error;
+        let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let e = TateruError::BridgeIo(io);
+        let source = e.source().expect("BridgeIo should have a source");
+        assert!(source.to_string().contains("broken"));
+    }
+
+    #[test]
+    fn ffi_error_no_source() {
+        use std::error::Error;
+        let e = TateruError::Ffi {
+            function: "krun_test",
+            code: -1,
+        };
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn invalid_config_no_source() {
+        use std::error::Error;
+        let e = TateruError::InvalidConfig("test".into());
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn invalid_memory_no_source() {
+        use std::error::Error;
+        let e = TateruError::InvalidMemory("test".into());
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn invalid_path_no_source() {
+        use std::error::Error;
+        let e = TateruError::InvalidPath(PathBuf::from("/test"));
+        assert!(e.source().is_none());
+    }
+
+    // Verify TateruError is Send (required for async error propagation).
+    #[test]
+    fn error_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<TateruError>();
+    }
+
+    // Verify all variant Display messages are non-empty.
+    #[test]
+    fn all_variants_have_nonempty_display() {
+        let variants: Vec<TateruError> = vec![
+            TateruError::Ffi { function: "f", code: -1 },
+            TateruError::InvalidPath(PathBuf::from("/p")),
+            TateruError::InvalidConfig("c".into()),
+            TateruError::NotRunning,
+            TateruError::AlreadyRunning,
+            TateruError::VmThreadPanicked,
+            TateruError::BridgeIo(std::io::Error::new(std::io::ErrorKind::Other, "e")),
+            TateruError::InvalidMemory("m".into()),
+        ];
+        for v in &variants {
+            assert!(!v.to_string().is_empty(), "empty display for {v:?}");
+        }
+    }
+
+    // Verify all variant Debug strings are non-empty.
+    #[test]
+    fn all_variants_have_nonempty_debug() {
+        let variants: Vec<TateruError> = vec![
+            TateruError::Ffi { function: "f", code: -1 },
+            TateruError::InvalidPath(PathBuf::from("/p")),
+            TateruError::InvalidConfig("c".into()),
+            TateruError::NotRunning,
+            TateruError::AlreadyRunning,
+            TateruError::VmThreadPanicked,
+            TateruError::BridgeIo(std::io::Error::new(std::io::ErrorKind::Other, "e")),
+            TateruError::InvalidMemory("m".into()),
+        ];
+        for v in &variants {
+            assert!(!format!("{v:?}").is_empty());
+        }
+    }
 }

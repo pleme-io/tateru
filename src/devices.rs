@@ -184,4 +184,232 @@ mod tests {
         assert_eq!(DiskFormat::Qcow2, DiskFormat::Qcow2);
         assert_ne!(DiskFormat::Raw, DiskFormat::Qcow2);
     }
+
+    // -- DiskFormat serde edge cases --
+    // Catches bugs where rename_all = "lowercase" doesn't apply consistently.
+
+    #[test]
+    fn disk_format_serde_raw_string() {
+        let json = "\"raw\"";
+        let f: DiskFormat = serde_json::from_str(json).unwrap();
+        assert_eq!(f, DiskFormat::Raw);
+    }
+
+    #[test]
+    fn disk_format_serde_qcow2_string() {
+        let json = "\"qcow2\"";
+        let f: DiskFormat = serde_json::from_str(json).unwrap();
+        assert_eq!(f, DiskFormat::Qcow2);
+    }
+
+    #[test]
+    fn disk_format_serde_uppercase_rejected() {
+        let json = "\"RAW\"";
+        let result: Result<DiskFormat, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn disk_format_serde_invalid_value() {
+        let json = "\"vmdk\"";
+        let result: Result<DiskFormat, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn disk_format_serde_roundtrip_raw() {
+        let json = serde_json::to_string(&DiskFormat::Raw).unwrap();
+        assert_eq!(json, "\"raw\"");
+        let f: DiskFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(f, DiskFormat::Raw);
+    }
+
+    #[test]
+    fn disk_format_serde_roundtrip_qcow2() {
+        let json = serde_json::to_string(&DiskFormat::Qcow2).unwrap();
+        assert_eq!(json, "\"qcow2\"");
+        let f: DiskFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(f, DiskFormat::Qcow2);
+    }
+
+    // -- DiskConfig serde with read_only = true --
+
+    #[test]
+    fn disk_config_serde_read_only() {
+        let disk = DiskConfig {
+            path: PathBuf::from("/test.raw"),
+            format: DiskFormat::Raw,
+            read_only: true,
+        };
+        let json = serde_json::to_string(&disk).unwrap();
+        let disk2: DiskConfig = serde_json::from_str(&json).unwrap();
+        assert!(disk2.read_only);
+        assert_eq!(disk2.format, DiskFormat::Raw);
+    }
+
+    // -- VsockPort equality --
+
+    #[test]
+    fn vsock_port_equality() {
+        let a = VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/a.sock"),
+        };
+        let b = VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/a.sock"),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn vsock_port_inequality_port() {
+        let a = VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/a.sock"),
+        };
+        let b = VsockPort {
+            guest_port: GuestPort::new(80).unwrap(),
+            host_socket: PathBuf::from("/tmp/a.sock"),
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn vsock_port_inequality_socket() {
+        let a = VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/a.sock"),
+        };
+        let b = VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/b.sock"),
+        };
+        assert_ne!(a, b);
+    }
+
+    // -- ConsoleConfig clone and equality --
+
+    #[test]
+    fn console_config_equality() {
+        let a = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/a.log"),
+        };
+        let b = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/a.log"),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn console_config_inequality() {
+        let a = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/a.log"),
+        };
+        let b = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/b.log"),
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn console_config_clone() {
+        let a = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/test.log"),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    // -- VirtioFsMount equality and clone --
+
+    #[test]
+    fn virtiofs_mount_equality() {
+        let a = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "data".into(),
+        };
+        let b = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "data".into(),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn virtiofs_mount_inequality() {
+        let a = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "data".into(),
+        };
+        let b = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "other".into(),
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn virtiofs_mount_clone() {
+        let a = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "data".into(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    // -- DiskFormat copy semantics --
+
+    #[test]
+    fn disk_format_copy() {
+        let a = DiskFormat::Raw;
+        let b = a;
+        let c = a;
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    // -- Debug format tests --
+
+    #[test]
+    fn disk_config_debug() {
+        let d = DiskConfig {
+            path: PathBuf::from("/test.qcow2"),
+            format: DiskFormat::Qcow2,
+            read_only: false,
+        };
+        let dbg = format!("{d:?}");
+        assert!(dbg.contains("DiskConfig"));
+        assert!(dbg.contains("test.qcow2"));
+    }
+
+    #[test]
+    fn virtiofs_debug() {
+        let m = VirtioFsMount {
+            host_path: PathBuf::from("/shared"),
+            mount_tag: "tag".into(),
+        };
+        let dbg = format!("{m:?}");
+        assert!(dbg.contains("VirtioFsMount"));
+    }
+
+    #[test]
+    fn vsock_port_debug() {
+        let p = VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: PathBuf::from("/tmp/test.sock"),
+        };
+        let dbg = format!("{p:?}");
+        assert!(dbg.contains("VsockPort"));
+    }
+
+    #[test]
+    fn console_config_debug() {
+        let c = ConsoleConfig {
+            log_path: PathBuf::from("/var/log/test.log"),
+        };
+        let dbg = format!("{c:?}");
+        assert!(dbg.contains("ConsoleConfig"));
+    }
 }

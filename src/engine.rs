@@ -725,6 +725,25 @@ mod tests {
     }
 
     #[test]
+    fn engine_call_equality_different_variants() {
+        assert_ne!(EngineCall::CreateCtx, EngineCall::CheckNestedVirt);
+    }
+
+    #[test]
+    fn engine_call_set_vm_config_inequality() {
+        let a = EngineCall::SetVmConfig { ctx: 0, vcpus: 4, memory_mib: 8192 };
+        let b = EngineCall::SetVmConfig { ctx: 0, vcpus: 8, memory_mib: 8192 };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn engine_call_add_disk_inequality() {
+        let a = EngineCall::AddDisk { ctx: 0, index: 0 };
+        let b = EngineCall::AddDisk { ctx: 0, index: 1 };
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn mock_full_lifecycle_records_all_calls() {
         let engine = MockEngine::new();
         let ctx = engine.create_ctx().unwrap();

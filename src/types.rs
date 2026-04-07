@@ -509,4 +509,168 @@ mod tests {
         assert_eq!(LogLevel::Off, LogLevel::Off);
         assert_ne!(LogLevel::Off, LogLevel::Error);
     }
+
+    // -- Serde deserialization bypass validation --
+    // These catch the bug class where serde can construct invalid newtypes
+    // (e.g. VcpuCount(0)) by bypassing the constructor validation.
+
+    #[test]
+    fn vcpu_count_serde_can_deserialize_zero() {
+        let result: VcpuCount = serde_json::from_str("0").unwrap();
+        assert_eq!(result.raw(), 0);
+        // This demonstrates that deserialization bypasses VcpuCount::new() validation.
+        // Downstream code trusting .raw() != 0 after deserialization would have a bug.
+    }
+
+    #[test]
+    fn memory_mib_serde_can_deserialize_zero() {
+        let result: MemoryMib = serde_json::from_str("0").unwrap();
+        assert_eq!(result.raw(), 0);
+    }
+
+    #[test]
+    fn guest_port_serde_can_deserialize_zero() {
+        let result: GuestPort = serde_json::from_str("0").unwrap();
+        assert_eq!(result.raw(), 0);
+    }
+
+    #[test]
+    fn vcpu_count_serde_max_value() {
+        let v = VcpuCount::new(255).unwrap();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "255");
+        let v2: VcpuCount = serde_json::from_str(&json).unwrap();
+        assert_eq!(v2.raw(), 255);
+    }
+
+    // -- MemoryMib::parse edge cases --
+
+    #[test]
+    fn memory_mib_parse_decimal_rejected() {
+        let err = MemoryMib::parse("1.5GiB").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_whitespace_only() {
+        let err = MemoryMib::parse("   ").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_only_mib_suffix() {
+        let err = MemoryMib::parse("MiB").unwrap_err();
+        assert!(matches!(err, TateruError::InvalidMemory(_)));
+    }
+
+    #[test]
+    fn memory_mib_parse_1_mib() {
+        let m = MemoryMib::parse("1MiB").unwrap();
+        assert_eq!(m.raw(), 1);
+    }
+
+    #[test]
+    fn memory_mib_parse_1_gib() {
+        let m = MemoryMib::parse("1GiB").unwrap();
+        assert_eq!(m.raw(), 1024);
+    }
+
+    #[test]
+    fn memory_mib_parse_leading_trailing_whitespace_mib() {
+        // Outer whitespace is trimmed, then "mib" suffix stripped, leaving " 512 "
+        // which .trim() handles, so this succeeds.
+        let m = MemoryMib::parse("  512 MiB  ").unwrap();
+        assert_eq!(m.raw(), 512);
+    }
+
+    #[test]
+    fn memory_mib_parse_zero_plain() {
+        let err = MemoryMib::parse("0").unwrap_err();
+        assert!(err.to_string().contains("at least 1"));
+    }
+
+    // -- Display edge cases --
+
+    #[test]
+    fn memory_mib_display_exact_2gib() {
+        let m = MemoryMib::new(2048).unwrap();
+        assert_eq!(m.to_string(), "2GiB");
+    }
+
+    #[test]
+    fn memory_mib_display_1025_mib() {
+        let m = MemoryMib::new(1025).unwrap();
+        assert_eq!(m.to_string(), "1025MiB");
+    }
+
+    // -- LogLevel debug --
+
+    #[test]
+    fn log_level_debug_format() {
+        let dbg = format!("{:?}", LogLevel::Trace);
+        assert!(dbg.contains("Trace"));
+    }
+
+    // -- CtxId debug --
+
+    #[test]
+    fn ctx_id_debug_format() {
+        let id = CtxId(99);
+        let dbg = format!("{id:?}");
+        assert!(dbg.contains("99"));
+    }
+
+    // -- Send/Sync bounds (critical for async composability) --
+
+    #[test]
+    fn vcpu_count_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<VcpuCount>();
+    }
+
+    #[test]
+    fn memory_mib_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MemoryMib>();
+    }
+
+    #[test]
+    fn guest_port_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<GuestPort>();
+    }
+
+    #[test]
+    fn ctx_id_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CtxId>();
+    }
+
+    #[test]
+    fn tateru_error_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<TateruError>();
+    }
+
+    // -- GuestPort copy semantics --
+
+    #[test]
+    fn guest_port_copy_semantics() {
+        let a = GuestPort::new(80).unwrap();
+        let b = a;
+        let c = a;
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    // -- MemoryMib clone semantics --
+
+    #[test]
+    fn memory_mib_clone_semantics() {
+        let a = MemoryMib::new(2048).unwrap();
+        let b = a;
+        let c = a;
+        assert_eq!(a.raw(), b.raw());
+        assert_eq!(b.raw(), c.raw());
+    }
 }

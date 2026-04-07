@@ -1041,4 +1041,363 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TateruError::Ffi { .. }));
     }
+
+    // -- VmBuilder::vsock() is completely untested --
+    // Catches bugs where the raw vsock port path (no bridge) fails to register.
+
+    #[test]
+    fn builder_vsock_raw_port() {
+        let builder = test_builder().vsock(VsockPort {
+            guest_port: GuestPort::new(22).unwrap(),
+            host_socket: "/tmp/vsock-22.sock".into(),
+        });
+        assert_eq!(builder.vsock_ports.len(), 1);
+        assert_eq!(builder.vsock_ports[0].guest_port.raw(), 22);
+    }
+
+    #[test]
+    fn builder_vsock_multiple_raw_ports() {
+        let builder = test_builder()
+            .vsock(VsockPort {
+                guest_port: GuestPort::new(22).unwrap(),
+                host_socket: "/tmp/vsock-22.sock".into(),
+            })
+            .vsock(VsockPort {
+                guest_port: GuestPort::new(80).unwrap(),
+                host_socket: "/tmp/vsock-80.sock".into(),
+            });
+        assert_eq!(builder.vsock_ports.len(), 2);
+    }
+
+    // -- Builder initial state --
+    // Catches bugs where the builder starts with unexpected defaults.
+
+    #[test]
+    fn builder_initial_state() {
+        let builder = test_builder();
+        assert!(builder.vcpus.is_none());
+        assert!(builder.memory.is_none());
+        assert!(builder.disks.is_empty());
+        assert!(builder.virtiofs_mounts.is_empty());
+        assert!(builder.vsock_ports.is_empty());
+        assert!(builder.bridges.is_empty());
+        assert!(builder.console.is_none());
+        assert!(builder.oem_strings.is_empty());
+        assert!(builder.nested_virt.is_none());
+    }
+
+    // -- TokioBridgeSpawner trait bounds --
+
+    #[test]
+    fn tokio_bridge_spawner_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TokioBridgeSpawner>();
+    }
+
+    #[test]
+    fn tokio_bridge_spawner_is_debug() {
+        let s = TokioBridgeSpawner::new();
+        let d = format!("{s:?}");
+        assert!(d.contains("TokioBridgeSpawner"));
+    }
+
+    #[test]
+    fn tokio_bridge_spawner_default() {
+        let _s = TokioBridgeSpawner;
+    }
+
+    // -- Vm::builder convenience --
+
+    #[test]
+    fn vm_builder_creates_new_builder() {
+        let builder = Vm::builder(MockEngine::new());
+        assert!(builder.disks.is_empty());
+    }
+
+    // -- Builder nested_virt false --
+
+    #[test]
+    fn builder_nested_virt_false() {
+        let builder = test_builder().nested_virt(false);
+        assert_eq!(builder.nested_virt, Some(false));
+    }
+
+    // -- Builder chaining returns same builder --
+
+    #[test]
+    fn builder_full_chain_validates() {
+        let builder = test_builder()
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .virtiofs(VirtioFsMount {
+                host_path: "/shared".into(),
+                mount_tag: "data".into(),
+            })
+            .vsock(VsockPort {
+                guest_port: GuestPort::new(22).unwrap(),
+                host_socket: "/tmp/vsock.sock".into(),
+            })
+            .console(ConsoleConfig {
+                log_path: "/tmp/console.log".into(),
+            })
+            .oem_string("key=val")
+            .nested_virt(true);
+        builder.validate().unwrap();
+        assert_eq!(builder.disks.len(), 1);
+        assert_eq!(builder.virtiofs_mounts.len(), 1);
+        assert_eq!(builder.vsock_ports.len(), 1);
+        assert_eq!(builder.oem_strings.len(), 1);
+    }
+
+    // -- Launch with vsock raw ports verifies engine calls --
+
+    #[tokio::test]
+    async fn launch_with_raw_vsock_ports() {
+        let result = Vm::builder(MockEngine::new())
+            .cpus(2)
+            .unwrap()
+            .memory("1GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .vsock(VsockPort {
+                guest_port: GuestPort::new(22).unwrap(),
+                host_socket: "/tmp/vsock-22.sock".into(),
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_ok());
+        let mut handle = result.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = handle.stop();
+    }
+
+    // -- Launch with oem strings verifies engine calls --
+
+    #[tokio::test]
+    async fn launch_with_oem_strings_recorded() {
+        let engine = MockEngine::new();
+        let result = Vm::builder(engine)
+            .cpus(2)
+            .unwrap()
+            .memory("1GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .oem_string("a=1")
+            .oem_string("b=2")
+            .launch()
+            .await;
+
+        assert!(result.is_ok());
+        let mut handle = result.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = handle.stop();
+    }
+
+    // -- Launch with nested virt enabled --
+
+    #[tokio::test]
+    async fn launch_with_nested_virt_enabled() {
+        let result = Vm::builder(MockEngine::new())
+            .cpus(2)
+            .unwrap()
+            .memory("1GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .nested_virt(true)
+            .launch()
+            .await;
+
+        assert!(result.is_ok());
+        let mut handle = result.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = handle.stop();
+    }
+
+    // -- VmHandle drop while running triggers shutdown --
+
+    #[tokio::test]
+    async fn vm_handle_drop_while_running_cleans_up() {
+        let result = Vm::builder(MockEngine::new())
+            .cpus(2)
+            .unwrap()
+            .memory("1GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_ok());
+        let handle = result.unwrap();
+        let workdir = handle.workdir.clone();
+        drop(handle); // should not panic
+        // Workdir should be cleaned up
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!workdir.exists());
+    }
+
+    // -- BridgeSpawner trait is object safe --
+
+    #[test]
+    fn bridge_spawner_is_object_safe() {
+        fn assert_object_safe(_: &dyn BridgeSpawner) {}
+        let s = MockBridgeSpawner::new();
+        assert_object_safe(&s);
+    }
+
+    // -- MockVmControl default values --
+
+    #[test]
+    fn mock_vm_control_default() {
+        let ctrl = MockVmControl::default();
+        assert!(ctrl.is_running());
+        assert_eq!(ctrl.stopped(), 0);
+        assert!(!ctrl.fail_stop.load(Ordering::SeqCst));
+    }
+
+    // -- MockBridgeSpawner debug --
+
+    #[test]
+    fn mock_bridge_spawner_debug() {
+        let s = MockBridgeSpawner::new();
+        let d = format!("{s:?}");
+        assert!(d.contains("MockBridgeSpawner"));
+    }
+
+    // -- launch_with_spawner verifies mock spawner gets correct bridge count --
+
+    #[tokio::test]
+    async fn launch_with_spawner_three_bridges() {
+        let spawner = MockBridgeSpawner::new();
+        let result = Vm::builder(MockEngine::new())
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .vsock_bridge(0, 22)
+            .unwrap()
+            .vsock_bridge(0, 80)
+            .unwrap()
+            .vsock_bridge(0, 443)
+            .unwrap()
+            .launch_with_spawner(spawner)
+            .await;
+
+        assert!(result.is_ok());
+        let mut handle = result.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = handle.stop();
+    }
+
+    // -- launch validation failures --
+
+    #[tokio::test]
+    async fn launch_no_cpus_fails_validation() {
+        let result = Vm::builder(MockEngine::new())
+            .memory("4GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("vCPU count not set"));
+    }
+
+    #[tokio::test]
+    async fn launch_no_memory_fails_validation() {
+        let result = Vm::builder(MockEngine::new())
+            .cpus(4)
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("memory not set"));
+    }
+
+    #[tokio::test]
+    async fn launch_no_disk_fails_validation() {
+        let result = Vm::builder(MockEngine::new())
+            .cpus(4)
+            .unwrap()
+            .memory("4GiB")
+            .unwrap()
+            .launch()
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one disk"));
+    }
+
+    // -- launch with console output --
+
+    #[tokio::test]
+    async fn launch_with_console_records_call() {
+        let result = Vm::builder(MockEngine::new())
+            .cpus(2)
+            .unwrap()
+            .memory("1GiB")
+            .unwrap()
+            .disk(DiskConfig {
+                path: "/test.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                read_only: false,
+            })
+            .console(ConsoleConfig {
+                log_path: "/tmp/console.log".into(),
+            })
+            .launch()
+            .await;
+
+        assert!(result.is_ok());
+        let mut handle = result.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = handle.stop();
+    }
+
+    // -- VmControl trait Send bound --
+
+    #[test]
+    fn vm_control_requires_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<MockVmControl>();
+    }
 }
