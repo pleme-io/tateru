@@ -156,6 +156,16 @@ pub(crate) fn add_vsock_port(
     port: u32,
     socket_path: &Path,
 ) -> Result<(), TateruError> {
+    // libkrun's vsock-listen mode bind(2)s the socket path; a stale
+    // file from a prior run causes EEXIST (-17). Idempotent unlink
+    // makes daemonized restart paths (libkrun-builderd KeepAlive) work
+    // without manual cleanup. Ignore NotFound; surface other errors
+    // (permission, etc.) so they don't masquerade as a libkrun bug.
+    match std::fs::remove_file(socket_path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(TateruError::BridgeIo(e)),
+    }
     let c_path = path_to_cstring(socket_path)?;
     let ret = unsafe { krun_add_vsock_port2(ctx_id, port, c_path.as_ptr(), true) };
     check("krun_add_vsock_port2", ret)
