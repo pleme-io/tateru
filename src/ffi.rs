@@ -31,6 +31,20 @@ unsafe extern "C" {
         port: u32,
         filepath: *const std::ffi::c_char,
     ) -> i32;
+    // libkrun's bidirectional vsock — `listen=true` means the host will
+    // initiate connections (host opens the unix socket as a server, guest
+    // listens on vsock:port). This is the host→guest inbound direction
+    // (e.g. host TCP:31122 → unix socket → guest's sshd via vsock:22).
+    // krun_add_vsock_port (without "2") is the older guest→host outbound
+    // form which silently never creates the host socket file when
+    // misused — manifests as `bridge I/O error: ENOENT` on every host
+    // connection attempt.
+    fn krun_add_vsock_port2(
+        ctx_id: u32,
+        port: u32,
+        filepath: *const std::ffi::c_char,
+        listen: bool,
+    ) -> i32;
     fn krun_set_console_output(ctx_id: u32, filepath: *const std::ffi::c_char) -> i32;
     fn krun_start_enter(ctx_id: u32) -> i32;
     fn krun_get_shutdown_eventfd(ctx_id: u32) -> i32;
@@ -128,14 +142,23 @@ pub(crate) fn add_virtiofs(ctx_id: u32, tag: &str, path: &Path) -> Result<(), Ta
 }
 
 /// Register a vsock port backed by a Unix socket.
+///
+/// Uses `krun_add_vsock_port2` with `listen=true` so the **host**
+/// initiates connections (host opens the unix socket; guest listens on
+/// vsock:port). This is the only mode where the host's TCP→unix→vsock
+/// bridge actually works for inbound traffic to a guest service like
+/// sshd. The older `krun_add_vsock_port` is for outbound-from-guest
+/// IPC and silently never creates the host socket file in our use
+/// case — manifests as `bridge I/O error: ENOENT` on every connection
+/// attempt to the TCP listener.
 pub(crate) fn add_vsock_port(
     ctx_id: u32,
     port: u32,
     socket_path: &Path,
 ) -> Result<(), TateruError> {
     let c_path = path_to_cstring(socket_path)?;
-    let ret = unsafe { krun_add_vsock_port(ctx_id, port, c_path.as_ptr()) };
-    check("krun_add_vsock_port", ret)
+    let ret = unsafe { krun_add_vsock_port2(ctx_id, port, c_path.as_ptr(), true) };
+    check("krun_add_vsock_port2", ret)
 }
 
 /// Redirect console output to a file.
