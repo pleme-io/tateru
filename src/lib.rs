@@ -41,6 +41,17 @@ pub(crate) mod ffi;
 #[cfg(feature = "config")]
 pub mod config;
 
+// Apple Virtualization.framework engine — the second of tateru's two
+// engines. macOS-only and feature-gated; on other targets the module
+// compiles to nothing. See `src/vz/mod.rs` for the rationale (Rosetta-
+// for-Linux x86_64 needs VZ; libkrun's Hypervisor.framework path
+// can't drive it).
+#[cfg(all(target_os = "macos", feature = "vz"))]
+pub mod vz;
+
+#[cfg(all(target_os = "macos", feature = "vz"))]
+pub use vz::VzEngine;
+
 // Re-exports for ergonomic use
 pub use bridge::{BridgeConfig, BridgeHandle};
 pub use devices::{ConsoleConfig, DiskConfig, DiskFormat, VirtioFsMount, VsockPort};

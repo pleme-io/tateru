@@ -13,6 +13,17 @@ build = "build.rs"
 default = []
 config = ["dep:shikumi"]
 testing = []
+# Virtualization.framework engine (VzEngine) alongside the default
+# Hypervisor.framework / libkrun engine. Required for Apple
+# Rosetta-for-Linux x86_64 translation — libkrun's HV path can't drive
+# it because Rosetta's runtime check requires VZ + rosettaModeEnabled.
+# macOS-only; Cargo target gating keeps non-macOS builds free of these.
+vz = [
+  "dep:objc2",
+  "dep:objc2-foundation",
+  "dep:objc2-virtualization",
+  "dep:block2",
+]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -26,6 +37,31 @@ tracing = "0.1"
 tokio = { version = "1", features = ["rt", "net", "sync", "macros", "time", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 shikumi = { version = "0.1", optional = true }
+
+# Virtualization.framework bindings — gated on `vz` feature + macOS target.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, features = ["NSString", "NSURL", "NSError", "NSArray"] }
+objc2-virtualization = { version = "0.3", optional = true, features = [
+  "VZVirtualMachine",
+  "VZVirtualMachineConfiguration",
+  "VZVirtioBlockDeviceConfiguration",
+  "VZDiskImageStorageDeviceAttachment",
+  "VZVirtioFileSystemDeviceConfiguration",
+  "VZSharedDirectory",
+  "VZSingleDirectoryShare",
+  "VZMultipleDirectoryShare",
+  "VZLinuxRosettaDirectoryShare",
+  "VZVirtioSocketDeviceConfiguration",
+  "VZVirtioSocketListener",
+  "VZVirtioSocketConnection",
+  "VZGenericPlatformConfiguration",
+  "VZEFIBootLoader",
+  "VZLinuxBootLoader",
+  "VZGenericMachineIdentifier",
+  "VZError",
+] }
+block2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
