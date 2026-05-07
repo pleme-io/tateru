@@ -27,6 +27,7 @@
 //!       when `:systems` declares `x86_64-linux`.
 #![cfg(all(target_os = "macos", feature = "vz"))]
 
+mod configuration;
 mod engine;
 mod state;
 
