@@ -1,10 +1,8 @@
 name: auto-release
 
-# Three-line consumer shim. Every push to main runs the pleme-io substrate
-# single-crate auto-release pipeline (bump → commit → tag → push → publish).
-# The pre-existing release.yml only fires on a tag that nothing creates, so
-# without this the repo never bumps.
-
+# The canonical consumer shim (org ★★ AUTO-RELEASE): every merge to main
+# bumps, tags, pushes and publishes. The pipeline lives once, in
+# pleme-io/substrate; this file only names it.
 on:
   push:
     branches: [main]
